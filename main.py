@@ -1,6 +1,7 @@
 import io
 import csv
 import os
+import secrets
 import uuid
 import zipfile
 import sqlite3
@@ -9,8 +10,10 @@ from pathlib import Path
 from typing import Optional
 
 import qrcode
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse, StreamingResponse
+from itsdangerous import URLSafeTimedSerializer, BadData
+from passlib.context import CryptContext
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File, status
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -20,6 +23,10 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", "."))
 DB_PATH  = str(DATA_DIR / "alumni.db")
 QR_DIR   = DATA_DIR / "qr_codes"
 QR_DIR.mkdir(parents=True, exist_ok=True)
+
+SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+_signer    = URLSafeTimedSerializer(SECRET_KEY)
+_pwd       = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -48,17 +55,68 @@ def init_db():
             scanned_at       TEXT DEFAULT (datetime('now','localtime'))
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS admin_users (
+            id            INTEGER PRIMARY KEY,
+            username      TEXT    UNIQUE NOT NULL,
+            password_hash TEXT    NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
 
+def init_admin():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT id FROM admin_users").fetchone()
+    if not row:
+        default_pass = os.environ.get("ADMIN_PASS", "Alumni@2024")
+        conn.execute(
+            "INSERT INTO admin_users (username, password_hash) VALUES (?,?)",
+            ("admin", _pwd.hash(default_pass)),
+        )
+        conn.commit()
+        print(f"[AUTH] Admin account created — username: admin  password: {default_pass}")
+        print("[AUTH] Change your password after first login!")
+    reset = os.environ.get("RESET_PASSWORD")
+    if reset:
+        conn.execute(
+            "UPDATE admin_users SET password_hash=? WHERE username='admin'",
+            (_pwd.hash(reset),),
+        )
+        conn.commit()
+        print("[AUTH] Password reset via RESET_PASSWORD env var.")
+    conn.close()
+
+
 init_db()
+init_admin()
 
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def _get_user(request: Request) -> Optional[str]:
+    token = request.cookies.get("session")
+    if not token:
+        return None
+    try:
+        return _signer.loads(token, max_age=8 * 3600)
+    except BadData:
+        return None
+
+
+def require_admin(request: Request) -> str:
+    user = _get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
 
 
 # ── QR generation ─────────────────────────────────────────────────────────────
@@ -93,6 +151,63 @@ class ScanBody(BaseModel):
     token: str
 
 
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
+# ── Auth routes ───────────────────────────────────────────────────────────────
+
+@app.get("/login")
+def login_page():
+    return FileResponse("static/login.html")
+
+
+@app.post("/login")
+def do_login(body: LoginBody):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT password_hash FROM admin_users WHERE username=?", (body.username,)
+    ).fetchone()
+    conn.close()
+    if not row or not _pwd.verify(body.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    token = _signer.dumps(body.username)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie("session", token, httponly=True, samesite="lax", max_age=8 * 3600)
+    return resp
+
+
+@app.get("/logout")
+def logout():
+    resp = RedirectResponse("/login", status_code=302)
+    resp.delete_cookie("session")
+    return resp
+
+
+@app.post("/api/auth/change-password")
+def change_password(body: ChangePasswordBody, username: str = Depends(require_admin)):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT password_hash FROM admin_users WHERE username=?", (username,)
+    ).fetchone()
+    if not row or not _pwd.verify(body.current_password, row["password_hash"]):
+        conn.close()
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    conn.execute(
+        "UPDATE admin_users SET password_hash=? WHERE username=?",
+        (_pwd.hash(body.new_password), username),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
 # ── API routes ────────────────────────────────────────────────────────────────
 
 @app.get("/api/stats")
@@ -115,7 +230,7 @@ def get_stats():
 
 
 @app.get("/api/participants")
-def list_participants():
+def list_participants(_: str = Depends(require_admin)):
     conn = get_db()
     rows = conn.execute(
         "SELECT * FROM participants ORDER BY created_at DESC"
@@ -125,7 +240,7 @@ def list_participants():
 
 
 @app.post("/api/participants", status_code=201)
-def add_participant(p: ParticipantIn):
+def add_participant(p: ParticipantIn, _: str = Depends(require_admin)):
     token = str(uuid.uuid4())
     conn = get_db()
     try:
@@ -144,7 +259,7 @@ def add_participant(p: ParticipantIn):
 
 
 @app.post("/api/participants/bulk")
-async def bulk_import(file: UploadFile = File(...)):
+async def bulk_import(file: UploadFile = File(...), _: str = Depends(require_admin)):
     content = (await file.read()).decode("utf-8-sig").splitlines()
     reader  = csv.DictReader(content)
     added, errors = 0, []
@@ -170,7 +285,7 @@ async def bulk_import(file: UploadFile = File(...)):
 
 
 @app.get("/api/participants/{pid}/qr")
-def download_qr(pid: int):
+def download_qr(pid: int, _: str = Depends(require_admin)):
     conn = get_db()
     row = conn.execute("SELECT * FROM participants WHERE id=?", (pid,)).fetchone()
     conn.close()
@@ -184,7 +299,7 @@ def download_qr(pid: int):
 
 
 @app.get("/api/qr/download-all")
-def download_all_qr():
+def download_all_qr(_: str = Depends(require_admin)):
     conn = get_db()
     rows = conn.execute("SELECT id, name FROM participants").fetchall()
     conn.close()
@@ -203,7 +318,7 @@ def download_all_qr():
 
 
 @app.put("/api/participants/{pid}/sent")
-def mark_sent(pid: int, body: MarkSentBody):
+def mark_sent(pid: int, body: MarkSentBody, _: str = Depends(require_admin)):
     conn = get_db()
     conn.execute("UPDATE participants SET qr_sent=? WHERE id=?", (1 if body.sent else 0, pid))
     conn.commit()
@@ -212,7 +327,7 @@ def mark_sent(pid: int, body: MarkSentBody):
 
 
 @app.delete("/api/participants/{pid}")
-def delete_participant(pid: int):
+def delete_participant(pid: int, _: str = Depends(require_admin)):
     conn = get_db()
     row = conn.execute("SELECT name FROM participants WHERE id=?", (pid,)).fetchone()
     if not row:
@@ -276,7 +391,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.get("/")
-def admin_page():
+def admin_page(request: Request):
+    if not _get_user(request):
+        return RedirectResponse("/login", status_code=302)
     return FileResponse("static/admin.html")
 
 

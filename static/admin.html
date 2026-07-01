@@ -24,9 +24,17 @@
   <span class="navbar-brand fw-bold">
     <i class="bi bi-mortarboard-fill me-2"></i>Alumni Meet — Entry Management
   </span>
-  <a href="/scanner" target="_blank" class="btn btn-outline-light btn-sm">
-    <i class="bi bi-qr-code-scan me-1"></i>Open Scanner
-  </a>
+  <div class="d-flex gap-2">
+    <a href="/scanner" target="_blank" class="btn btn-outline-light btn-sm">
+      <i class="bi bi-qr-code-scan me-1"></i>Open Scanner
+    </a>
+    <button class="btn btn-outline-light btn-sm" data-bs-toggle="modal" data-bs-target="#pwModal">
+      <i class="bi bi-key me-1"></i>Password
+    </button>
+    <a href="/logout" class="btn btn-outline-danger btn-sm">
+      <i class="bi bi-box-arrow-right me-1"></i>Logout
+    </a>
+  </div>
 </nav>
 
 <div class="container-fluid py-4 px-4">
@@ -155,6 +163,38 @@
   </div>
 </div>
 
+<!-- Change password modal -->
+<div class="modal fade" id="pwModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title fw-semibold"><i class="bi bi-key me-2"></i>Change Password</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger d-none" id="pwError"></div>
+        <div class="alert alert-success d-none" id="pwSuccess">Password changed successfully!</div>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">Current Password</label>
+          <input type="password" class="form-control form-control-sm" id="pwCurrent">
+        </div>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">New Password</label>
+          <input type="password" class="form-control form-control-sm" id="pwNew">
+        </div>
+        <div class="mb-1">
+          <label class="form-label small fw-semibold">Confirm New Password</label>
+          <input type="password" class="form-control form-control-sm" id="pwConfirm">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-primary" onclick="changePassword()">Update Password</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Delete confirmation modal -->
 <div class="modal fade" id="delModal" tabindex="-1">
   <div class="modal-dialog modal-sm modal-dialog-centered">
@@ -178,6 +218,12 @@
   const toastEl   = new bootstrap.Toast(document.getElementById('toast'), { delay: 3000 });
   const delModal  = new bootstrap.Modal(document.getElementById('delModal'));
 
+  async function api(url, options = {}) {
+    const r = await fetch(url, options);
+    if (r.status === 401) { window.location.href = '/login'; return null; }
+    return r;
+  }
+
   function toast(msg, type = 'success') {
     const el = document.getElementById('toast');
     el.className = `toast align-items-center border-0 text-bg-${type}`;
@@ -194,7 +240,9 @@
   }
 
   async function loadAll() {
-    all = await fetch('/api/participants').then(r => r.json());
+    const r = await api('/api/participants');
+    if (!r) return;
+    all = await r.json();
     renderTable(all);
     await loadStats();
   }
@@ -257,10 +305,11 @@
       phone: document.getElementById('pPhone').value.trim(),
       email: document.getElementById('pEmail').value.trim(),
     };
-    const r = await fetch('/api/participants', {
+    const r = await api('/api/participants', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    if (!r) return;
     if (r.ok) {
       toast(`${payload.name} added — QR generated`);
       e.target.reset();
@@ -276,13 +325,15 @@
     if (!file) { toast('Select a CSV file first', 'warning'); return; }
     const fd = new FormData();
     fd.append('file', file);
-    const d = await fetch('/api/participants/bulk', { method: 'POST', body: fd }).then(r => r.json());
+    const res = await api('/api/participants/bulk', { method: 'POST', body: fd });
+    if (!res) return;
+    const d = await res.json();
     toast(`Imported ${d.added} participants${d.errors.length ? ' (' + d.errors.length + ' skipped)' : ''}`);
     await loadAll();
   }
 
   async function toggleSent(id, current) {
-    await fetch(`/api/participants/${id}/sent`, {
+    await api(`/api/participants/${id}/sent`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sent: !current }),
     });
@@ -297,7 +348,7 @@
   }
   document.getElementById('delConfirm').addEventListener('click', async () => {
     if (!pendingDeleteId) return;
-    await fetch(`/api/participants/${pendingDeleteId}`, { method: 'DELETE' });
+    await api(`/api/participants/${pendingDeleteId}`, { method: 'DELETE' });
     delModal.hide();
     toast('Participant removed', 'warning');
     await loadAll();
@@ -305,6 +356,36 @@
 
   function esc(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function changePassword() {
+    const curr = document.getElementById('pwCurrent').value;
+    const nw   = document.getElementById('pwNew').value;
+    const conf = document.getElementById('pwConfirm').value;
+    const errEl = document.getElementById('pwError');
+    const okEl  = document.getElementById('pwSuccess');
+    errEl.classList.add('d-none');
+    okEl.classList.add('d-none');
+
+    if (!curr || !nw) { errEl.textContent = 'All fields are required.'; errEl.classList.remove('d-none'); return; }
+    if (nw !== conf)  { errEl.textContent = 'New passwords do not match.'; errEl.classList.remove('d-none'); return; }
+    if (nw.length < 6) { errEl.textContent = 'New password must be at least 6 characters.'; errEl.classList.remove('d-none'); return; }
+
+    const r = await api('/api/auth/change-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: curr, new_password: nw }),
+    });
+    if (!r) return;
+    if (r.ok) {
+      okEl.classList.remove('d-none');
+      document.getElementById('pwCurrent').value = '';
+      document.getElementById('pwNew').value = '';
+      document.getElementById('pwConfirm').value = '';
+    } else {
+      const d = await r.json().catch(() => ({}));
+      errEl.textContent = d.detail || 'Failed to change password.';
+      errEl.classList.remove('d-none');
+    }
   }
 
   loadAll();

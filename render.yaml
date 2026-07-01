@@ -7,6 +7,8 @@ services:
     envVars:
       - key: DATA_DIR
         value: /var/data
+      - key: SECRET_KEY
+        generateValue: true
     disk:
       name: alumni-data
       mountPath: /var/data
