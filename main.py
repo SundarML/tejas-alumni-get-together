@@ -9,9 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import hashlib
+import hmac
+
 import qrcode
 from itsdangerous import URLSafeTimedSerializer, BadData
-from passlib.context import CryptContext
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,7 +28,19 @@ QR_DIR.mkdir(parents=True, exist_ok=True)
 
 SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 _signer    = URLSafeTimedSerializer(SECRET_KEY)
-_pwd       = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260000)
+    return f"pbkdf2:{salt}:{h.hex()}"
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        _, salt, expected = stored.split(":")
+    except ValueError:
+        return False
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260000)
+    return hmac.compare_digest(h.hex(), expected)
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -74,7 +88,7 @@ def init_admin():
         default_pass = os.environ.get("ADMIN_PASS", "Alumni@2024")
         conn.execute(
             "INSERT INTO admin_users (username, password_hash) VALUES (?,?)",
-            ("admin", _pwd.hash(default_pass)),
+            ("admin", _hash_password(default_pass)),
         )
         conn.commit()
         print(f"[AUTH] Admin account created — username: admin  password: {default_pass}")
@@ -83,7 +97,7 @@ def init_admin():
     if reset:
         conn.execute(
             "UPDATE admin_users SET password_hash=? WHERE username='admin'",
-            (_pwd.hash(reset),),
+            (_hash_password(reset),),
         )
         conn.commit()
         print("[AUTH] Password reset via RESET_PASSWORD env var.")
@@ -175,7 +189,7 @@ def do_login(body: LoginBody):
         "SELECT password_hash FROM admin_users WHERE username=?", (body.username,)
     ).fetchone()
     conn.close()
-    if not row or not _pwd.verify(body.password, row["password_hash"]):
+    if not row or not _verify_password(body.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
     token = _signer.dumps(body.username)
     resp = JSONResponse({"ok": True})
@@ -196,12 +210,12 @@ def change_password(body: ChangePasswordBody, username: str = Depends(require_ad
     row = conn.execute(
         "SELECT password_hash FROM admin_users WHERE username=?", (username,)
     ).fetchone()
-    if not row or not _pwd.verify(body.current_password, row["password_hash"]):
+    if not row or not _verify_password(body.current_password, row["password_hash"]):
         conn.close()
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     conn.execute(
         "UPDATE admin_users SET password_hash=? WHERE username=?",
-        (_pwd.hash(body.new_password), username),
+        (_hash_password(body.new_password), username),
     )
     conn.commit()
     conn.close()
