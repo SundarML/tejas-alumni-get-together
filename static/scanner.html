@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Entry Scanner</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0f;
+      color: #fff;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Header */
+    header {
+      background: #111827;
+      padding: 14px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 16px; font-weight: 600; }
+    header a   { color: #6b7280; font-size: 13px; text-decoration: none; }
+
+    /* Stats bar */
+    .stats {
+      background: #1f2937;
+      display: flex;
+      justify-content: space-around;
+      padding: 10px 16px;
+      flex-shrink: 0;
+    }
+    .stat { text-align: center; }
+    .stat .num   { font-size: 1.5rem; font-weight: 700; }
+    .stat .label { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: .05em; }
+
+    /* Camera */
+    #reader {
+      width: 100%;
+      max-width: 480px;
+      margin: 0 auto;
+      flex-shrink: 0;
+    }
+    /* Override html5-qrcode default border */
+    #reader video { object-fit: cover; }
+
+    /* Result panel */
+    .result {
+      margin: 12px 16px 0;
+      padding: 18px 16px;
+      border-radius: 14px;
+      text-align: center;
+      transition: background .25s, border-color .25s;
+      flex-shrink: 0;
+    }
+    .result.idle    { background: #1a1a2a; border: 2px solid #2d2d3d; color: #4b5563; }
+    .result.valid   { background: #052e16; border: 2px solid #16a34a; }
+    .result.already { background: #3b1c00; border: 2px solid #d97706; }
+    .result.invalid { background: #2d0a0a; border: 2px solid #dc2626; }
+
+    .result .icon   { font-size: 2.4rem; }
+    .result .title  { font-size: 1.2rem; font-weight: 700; margin: 6px 0 2px; }
+    .result .sub    { font-size: .8rem; color: rgba(255,255,255,.6); }
+
+    /* Log */
+    .log-wrap  { flex: 1; overflow-y: auto; margin: 12px 16px; }
+    .log-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #4b5563; margin-bottom: 6px; }
+    .log-item  {
+      background: #111827;
+      border-radius: 8px;
+      padding: 9px 12px;
+      margin-bottom: 5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+    .dot.valid   { background: #16a34a; }
+    .dot.already { background: #d97706; }
+    .dot.invalid { background: #dc2626; }
+    .log-time { color: #4b5563; font-size: 11px; white-space: nowrap; margin-left: 8px; }
+    .log-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .no-log   { color: #374151; font-size: 13px; text-align: center; padding: 20px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🎓 Entry Scanner</h1>
+  <a href="/">Admin Panel</a>
+</header>
+
+<div class="stats">
+  <div class="stat">
+    <div class="num" id="sTotal">—</div>
+    <div class="label">Total</div>
+  </div>
+  <div class="stat">
+    <div class="num" style="color:#4ade80" id="sEntered">—</div>
+    <div class="label">Entered</div>
+  </div>
+  <div class="stat">
+    <div class="num" style="color:#f87171" id="sRemaining">—</div>
+    <div class="label">Remaining</div>
+  </div>
+</div>
+
+<div id="reader"></div>
+
+<div class="result idle" id="result">
+  <div class="icon">📷</div>
+  <div class="title">Ready to Scan</div>
+  <div class="sub">Point camera at participant's QR code</div>
+</div>
+
+<div class="log-wrap">
+  <div class="log-label">Recent Scans</div>
+  <div id="logList"><div class="no-log">No scans yet</div></div>
+</div>
+
+<script>
+  let paused   = false;
+  let logItems = [];
+
+  // ── QR scanner setup ────────────────────────────────────────────────────────
+  const scanner = new Html5Qrcode("reader");
+  scanner.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: { width: 240, height: 240 } },
+    async text => {
+      if (paused) return;
+      paused = true;
+      await processToken(text);
+      setTimeout(() => { paused = false; }, 3500);
+    },
+    () => {}
+  ).catch(err => {
+    setResult('invalid', '⚠️', 'Camera Error', err.toString());
+  });
+
+  // ── Scan processing ─────────────────────────────────────────────────────────
+  async function processToken(token) {
+    try {
+      const r = await fetch('/api/scan', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ token }),
+      });
+      const d = await r.json();
+
+      if (d.status === 'valid') {
+        setResult('valid',   '✅', d.name, 'Entry confirmed');
+        pushLog(d.name,  'valid');
+        vibrate([100, 50, 100]);
+      } else if (d.status === 'already_entered') {
+        setResult('already', '⚠️', d.name || 'Duplicate', d.message);
+        pushLog((d.name || 'Duplicate') + ' — already entered', 'already');
+        vibrate([300]);
+      } else {
+        setResult('invalid', '❌', 'Invalid QR', 'Not in the guest list');
+        pushLog('Invalid QR scanned', 'invalid');
+        vibrate([500]);
+      }
+    } catch {
+      setResult('invalid', '⚠️', 'Connection Error', 'Cannot reach server — check network');
+    }
+    loadStats();
+  }
+
+  // ── UI helpers ──────────────────────────────────────────────────────────────
+  function setResult(cls, icon, title, sub) {
+    const el = document.getElementById('result');
+    el.className = `result ${cls}`;
+    el.innerHTML = `
+      <div class="icon">${icon}</div>
+      <div class="title">${esc(title)}</div>
+      <div class="sub">${esc(sub)}</div>
+    `;
+  }
+
+  function pushLog(name, status) {
+    logItems.unshift({ name, status, time: new Date().toLocaleTimeString() });
+    if (logItems.length > 15) logItems.pop();
+    renderLog();
+  }
+
+  function renderLog() {
+    const el = document.getElementById('logList');
+    if (!logItems.length) {
+      el.innerHTML = '<div class="no-log">No scans yet</div>';
+      return;
+    }
+    el.innerHTML = logItems.map(s => `
+      <div class="log-item">
+        <span class="dot ${s.status}"></span>
+        <span class="log-name">${esc(s.name)}</span>
+        <span class="log-time">${s.time}</span>
+      </div>
+    `).join('');
+  }
+
+  async function loadStats() {
+    try {
+      const d = await fetch('/api/stats').then(r => r.json());
+      document.getElementById('sTotal').textContent     = d.total;
+      document.getElementById('sEntered').textContent   = d.entered;
+      document.getElementById('sRemaining').textContent = d.not_entered;
+    } catch {}
+  }
+
+  function vibrate(pattern) {
+    try { navigator.vibrate && navigator.vibrate(pattern); } catch {}
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  loadStats();
+  setInterval(loadStats, 10000);
+</script>
+</body>
+</html>

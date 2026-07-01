@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alumni Entry — Admin</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <style>
+    body { background: #f1f5f9; }
+    .navbar { background: linear-gradient(135deg,#0f172a,#1e3a5f); }
+    .stat-card { border: none; border-radius: 14px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    .stat-num  { font-size: 2.4rem; font-weight: 700; line-height: 1; }
+    .panel     { background: #fff; border-radius: 14px; box-shadow: 0 2px 8px rgba(0,0,0,.08); padding: 1.25rem; }
+    .table th  { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: #64748b; }
+    .table td  { vertical-align: middle; font-size: .875rem; }
+    .badge-sent     { background: #16a34a; }
+    .badge-not-sent { background: #94a3b8; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark px-4 py-3">
+  <span class="navbar-brand fw-bold">
+    <i class="bi bi-mortarboard-fill me-2"></i>Alumni Meet — Entry Management
+  </span>
+  <a href="/scanner" target="_blank" class="btn btn-outline-light btn-sm">
+    <i class="bi bi-qr-code-scan me-1"></i>Open Scanner
+  </a>
+</nav>
+
+<div class="container-fluid py-4 px-4">
+
+  <!-- Stats -->
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+      <div class="card stat-card text-center py-3">
+        <div class="stat-num text-primary" id="sTotal">—</div>
+        <div class="text-muted small mt-1">Total Participants</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card stat-card text-center py-3">
+        <div class="stat-num text-success" id="sEntered">—</div>
+        <div class="text-muted small mt-1">Entered</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card stat-card text-center py-3">
+        <div class="stat-num text-warning" id="sSent">—</div>
+        <div class="text-muted small mt-1">QR Sent</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card stat-card text-center py-3">
+        <div class="stat-num text-danger" id="sRemaining">—</div>
+        <div class="text-muted small mt-1">Not Yet Entered</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-4">
+
+    <!-- Left panel -->
+    <div class="col-lg-4">
+
+      <!-- Add participant -->
+      <div class="panel mb-4">
+        <h6 class="fw-semibold mb-3"><i class="bi bi-person-plus text-primary me-2"></i>Add Participant</h6>
+        <form id="addForm">
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Full Name *</label>
+            <input class="form-control form-control-sm" id="pName" placeholder="Enter full name" required>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Phone</label>
+            <input class="form-control form-control-sm" id="pPhone" placeholder="+91 XXXXX XXXXX">
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Email</label>
+            <input type="email" class="form-control form-control-sm" id="pEmail" placeholder="email@example.com">
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm w-100">
+            <i class="bi bi-plus-circle me-1"></i>Add &amp; Generate QR
+          </button>
+        </form>
+      </div>
+
+      <!-- CSV import -->
+      <div class="panel mb-4">
+        <h6 class="fw-semibold mb-2"><i class="bi bi-file-earmark-spreadsheet text-success me-2"></i>Bulk Import (CSV)</h6>
+        <p class="text-muted small mb-2">
+          CSV columns: <code>name, phone, email</code><br>
+          First row must be the header.
+        </p>
+        <input type="file" class="form-control form-control-sm mb-2" id="csvFile" accept=".csv">
+        <button class="btn btn-success btn-sm w-100" onclick="importCSV()">
+          <i class="bi bi-upload me-1"></i>Import CSV
+        </button>
+      </div>
+
+      <!-- Download all -->
+      <div class="panel">
+        <a href="/api/qr/download-all" class="btn btn-outline-secondary btn-sm w-100">
+          <i class="bi bi-archive me-1"></i>Download All QR Codes (ZIP)
+        </a>
+      </div>
+
+    </div>
+
+    <!-- Right: participants table -->
+    <div class="col-lg-8">
+      <div class="panel">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h6 class="fw-semibold mb-0">Participants</h6>
+          <div class="d-flex gap-2">
+            <input class="form-control form-control-sm" id="searchInput" placeholder="Search name / phone…"
+                   style="width:200px" oninput="filterTable()">
+            <button class="btn btn-outline-secondary btn-sm" onclick="loadAll()" title="Refresh">
+              <i class="bi bi-arrow-clockwise"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-hover mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>#</th>
+                <th>Name</th>
+                <th>Phone</th>
+                <th>QR Status</th>
+                <th>Entry</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tbody">
+              <tr><td colspan="6" class="text-center text-muted py-4">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+  <div id="toast" class="toast align-items-center border-0" role="alert">
+    <div class="d-flex">
+      <div class="toast-body" id="toastMsg"></div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete confirmation modal -->
+<div class="modal fade" id="delModal" tabindex="-1">
+  <div class="modal-dialog modal-sm modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-body text-center py-4">
+        <i class="bi bi-exclamation-triangle-fill text-danger fs-2 d-block mb-2"></i>
+        <div class="fw-semibold mb-1">Delete participant?</div>
+        <div class="text-muted small" id="delName"></div>
+      </div>
+      <div class="modal-footer border-0 justify-content-center pt-0">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-danger" id="delConfirm">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  let all = [];
+  const toastEl   = new bootstrap.Toast(document.getElementById('toast'), { delay: 3000 });
+  const delModal  = new bootstrap.Modal(document.getElementById('delModal'));
+
+  function toast(msg, type = 'success') {
+    const el = document.getElementById('toast');
+    el.className = `toast align-items-center border-0 text-bg-${type}`;
+    document.getElementById('toastMsg').textContent = msg;
+    toastEl.show();
+  }
+
+  async function loadStats() {
+    const d = await fetch('/api/stats').then(r => r.json());
+    document.getElementById('sTotal').textContent     = d.total;
+    document.getElementById('sEntered').textContent   = d.entered;
+    document.getElementById('sSent').textContent      = d.qr_sent;
+    document.getElementById('sRemaining').textContent = d.not_entered;
+  }
+
+  async function loadAll() {
+    all = await fetch('/api/participants').then(r => r.json());
+    renderTable(all);
+    await loadStats();
+  }
+
+  function renderTable(rows) {
+    const tbody = document.getElementById('tbody');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No participants yet</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map((p, i) => `
+      <tr>
+        <td class="text-muted">${i + 1}</td>
+        <td class="fw-semibold">${esc(p.name)}</td>
+        <td class="text-muted">${esc(p.phone || '—')}</td>
+        <td>
+          <span class="badge ${p.qr_sent ? 'badge-sent' : 'badge-not-sent'}">
+            ${p.qr_sent ? 'Sent' : 'Not Sent'}
+          </span>
+        </td>
+        <td>
+          ${p.entered
+            ? `<span class="text-success fw-semibold"><i class="bi bi-check-circle-fill me-1"></i>Entered</span>
+               <div class="text-muted" style="font-size:.72rem">${esc(p.entered_at || '')}</div>`
+            : '<span class="text-muted"><i class="bi bi-circle me-1"></i>Pending</span>'
+          }
+        </td>
+        <td>
+          <div class="d-flex gap-1 flex-wrap">
+            <a href="/api/participants/${p.id}/qr" download
+               class="btn btn-outline-primary btn-sm" title="Download QR">
+              <i class="bi bi-qr-code"></i>
+            </a>
+            <button class="btn btn-sm ${p.qr_sent ? 'btn-success' : 'btn-outline-secondary'}"
+                    title="${p.qr_sent ? 'Unmark Sent' : 'Mark as Sent'}"
+                    onclick="toggleSent(${p.id}, ${p.qr_sent})">
+              <i class="bi bi-${p.qr_sent ? 'check2-circle' : 'send'}"></i>
+            </button>
+            <button class="btn btn-outline-danger btn-sm" title="Delete"
+                    onclick="confirmDelete(${p.id}, '${esc(p.name)}')">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  function filterTable() {
+    const q = document.getElementById('searchInput').value.toLowerCase();
+    renderTable(all.filter(p =>
+      p.name.toLowerCase().includes(q) || (p.phone || '').includes(q)
+    ));
+  }
+
+  document.getElementById('addForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const payload = {
+      name:  document.getElementById('pName').value.trim(),
+      phone: document.getElementById('pPhone').value.trim(),
+      email: document.getElementById('pEmail').value.trim(),
+    };
+    const r = await fetch('/api/participants', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (r.ok) {
+      toast(`${payload.name} added — QR generated`);
+      e.target.reset();
+      await loadAll();
+    } else {
+      const err = await r.json();
+      toast(err.detail || 'Failed to add participant', 'danger');
+    }
+  });
+
+  async function importCSV() {
+    const file = document.getElementById('csvFile').files[0];
+    if (!file) { toast('Select a CSV file first', 'warning'); return; }
+    const fd = new FormData();
+    fd.append('file', file);
+    const d = await fetch('/api/participants/bulk', { method: 'POST', body: fd }).then(r => r.json());
+    toast(`Imported ${d.added} participants${d.errors.length ? ' (' + d.errors.length + ' skipped)' : ''}`);
+    await loadAll();
+  }
+
+  async function toggleSent(id, current) {
+    await fetch(`/api/participants/${id}/sent`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sent: !current }),
+    });
+    await loadAll();
+  }
+
+  let pendingDeleteId = null;
+  function confirmDelete(id, name) {
+    pendingDeleteId = id;
+    document.getElementById('delName').textContent = name;
+    delModal.show();
+  }
+  document.getElementById('delConfirm').addEventListener('click', async () => {
+    if (!pendingDeleteId) return;
+    await fetch(`/api/participants/${pendingDeleteId}`, { method: 'DELETE' });
+    delModal.hide();
+    toast('Participant removed', 'warning');
+    await loadAll();
+  });
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  loadAll();
+  setInterval(loadAll, 20000);
+</script>
+</body>
+</html>

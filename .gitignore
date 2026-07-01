@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+alumni.db
+qr_codes/
+*.egg-info/
